@@ -262,7 +262,8 @@ void WhitespaceManager::calculateLineBreakInformation() {
 // Align a single sequence of tokens, see AlignTokens below.
 template <typename F>
 static void
-AlignTokenSequence(unsigned Start, unsigned End, unsigned Column, F &&Matches,
+AlignTokenSequence(const FormatStyle &Style, unsigned Start, unsigned End,
+                   unsigned Column, F &&Matches,
                    SmallVector<WhitespaceManager::Change, 16> &Changes) {
   bool FoundMatchOnLine = false;
   int Shift = 0;
@@ -327,9 +328,27 @@ AlignTokenSequence(unsigned Start, unsigned End, unsigned Column, F &&Matches,
     }
 
     assert(Shift >= 0);
+    // The rest of code depends on Shift only, so when it's equal zero,
+    // there is no need to waste a CPU time for meaningless iteration.
+    if (Shift == 0)
+      continue;
+
     Changes[i].StartOfTokenColumn += Shift;
     if (i + 1 != Changes.size())
       Changes[i + 1].PreviousEndOfTokenColumn += Shift;
+
+    // TODO: This should be probably better implemented in Matches function passed in.
+    // If PointerAlignment is PAS_Right, keep *s or &s next to the token
+    if (Style.PointerAlignment == FormatStyle::PAS_Right &&
+        Changes[i].Spaces != 0) {
+      for (int previous = i - 1;
+           previous >= 0 &&
+               Changes[previous].Tok->getType() == TT_PointerOrReference;
+           previous--) {
+        Changes[previous + 1].Spaces -= Shift;
+        Changes[previous].Spaces += Shift;
+      }
+    }
   }
 }
 
@@ -395,8 +414,8 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
   // containing any matching token to be aligned and located after such token.
   auto AlignCurrentSequence = [&] {
     if (StartOfSequence > 0 && StartOfSequence < EndOfSequence)
-      AlignTokenSequence(StartOfSequence, EndOfSequence, MinColumn, Matches,
-                         Changes);
+      AlignTokenSequence(Style, StartOfSequence, EndOfSequence, MinColumn,
+                         Matches, Changes);
     MinColumn = 0;
     MaxColumn = UINT_MAX;
     StartOfSequence = 0;
@@ -640,12 +659,9 @@ void WhitespaceManager::alignConsecutiveDeclarations() {
   if (!Style.AlignConsecutiveDeclarations)
     return;
 
-  // FIXME: Currently we don't handle properly the PointerAlignment: Right
-  // The * and & are not aligned and are left dangling. Something has to be done
-  // about it, but it raises the question of alignment of code like:
-  //   const char* const* v1;
-  //   float const* v2;
-  //   SomeVeryLongType const& v3;
+  // TODO: Currently the PointerAlignment: Right is handled in
+  // AlignTokenSequence(), probably this should be moved to to higher
+  // level function, or even lambda (Matches function) passed in.
   AlignTokens(
       Style,
       [](Change const &C) {
